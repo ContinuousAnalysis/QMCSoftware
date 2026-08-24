@@ -92,7 +92,9 @@ def test_product_measure_normalizes_scalar_1d_statistics():
     np.testing.assert_allclose(
         tm.standard_deviation, [np.sqrt(4.0 / 3.0), 3.0]
     )
-    np.testing.assert_allclose(tm.covariance, np.diag([4.0 / 3.0, 9.0]))
+    np.testing.assert_allclose(
+        tm.covariance.toarray(), np.diag([4.0 / 3.0, 9.0])
+    )
     assert tm.mean.shape == (2,)
     assert tm.variance.shape == (2,)
     assert tm.standard_deviation.shape == (2,)
@@ -123,14 +125,73 @@ def test_product_measure_statistics_preserve_order_and_covariance_blocks():
         tm.standard_deviation,
         [np.sqrt(4.0 / 3.0), np.sqrt(2.0), np.sqrt(3.0)],
     )
-    np.testing.assert_allclose(tm.covariance, expected_covariance)
+    covariance = tm.covariance.tocsr()
+    np.testing.assert_allclose(covariance.toarray(), expected_covariance)
 
     assert tm.mean.shape == (3,)
     assert tm.variance.shape == (3,)
     assert tm.standard_deviation.shape == (3,)
-    assert tm.covariance.shape == (3, 3)
-    assert np.array_equal(tm.covariance[:1, 1:], np.zeros((1, 2)))
-    assert np.array_equal(tm.covariance[1:, :1], np.zeros((2, 1)))
+    assert covariance.shape == (3, 3)
+    assert covariance[:1, 1:].nnz == 0
+    assert covariance[1:, :1].nnz == 0
+
+
+def test_product_measure_mixed_covariance_blocks_remain_sparse():
+    d = 128
+    tm = ProductMeasure(
+        DummySampler(d + 2),
+        [
+            Uniform(DummySampler(d)),
+            Gaussian(
+                DummySampler(2),
+                covariance=np.array([[1.0, 0.5], [0.5, 1.0]]),
+            ),
+        ],
+    )
+
+    covariance = tm.covariance
+    expected = sp.block_diag(
+        [marginal.covariance for marginal in tm.marginals], format="dia"
+    )
+
+    assert sp.issparse(covariance)
+    assert covariance.format == "dia"
+    assert covariance.shape == (d + 2, d + 2)
+    difference = (covariance - expected).tocsr()
+    difference.eliminate_zeros()
+    assert difference.nnz == 0
+    covariance_csr = covariance.tocsr()
+    np.testing.assert_allclose(
+        covariance_csr[-2:, -2:].toarray(), [[1.0, 0.5], [0.5, 1.0]]
+    )
+    assert covariance_csr[:d, d:].nnz == 0
+    assert covariance_csr[d:, :d].nnz == 0
+    assert not covariance.data.flags.writeable
+    with pytest.raises(ValueError):
+        covariance.data.setflags(write=True)
+
+
+def test_product_measure_dense_covariance_cannot_be_made_writeable():
+    tm = ProductMeasure(
+        DummySampler(3),
+        [
+            Gaussian(DummySampler(1), covariance=2.0),
+            Gaussian(
+                DummySampler(2), covariance=[[3.0, 0.25], [0.25, 4.0]]
+            ),
+        ],
+    )
+
+    covariance = tm.covariance
+
+    assert isinstance(covariance, np.ndarray)
+    np.testing.assert_allclose(
+        covariance,
+        [[2.0, 0.0, 0.0], [0.0, 3.0, 0.25], [0.0, 0.25, 4.0]],
+    )
+    assert not covariance.flags.writeable
+    with pytest.raises(ValueError):
+        covariance.setflags(write=True)
 
 
 def test_product_measure_missing_marginal_statistic_is_identified():

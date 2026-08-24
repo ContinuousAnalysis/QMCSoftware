@@ -249,22 +249,24 @@ class ProductMeasure(AbstractTrueMeasure):
                 )
             blocks.append(block)
 
-        if all(sparse.issparse(b) for b in blocks):
+        if any(sparse.issparse(block) for block in blocks):
             covariance = sparse.block_diag(blocks, format="dia")
-            covariance.data.setflags(write=False)
+            data = covariance.data
+            data.setflags(write=False)
+            covariance.data = self._read_only_view(data)
             return covariance
 
-        dense_blocks = [b.toarray() if sparse.issparse(b) else b for b in blocks]
         covariance = np.zeros(
             (self.d, self.d),
-            dtype=np.result_type(*[b.dtype for b in dense_blocks]),
+            dtype=np.result_type(*[block.dtype for block in blocks]),
         )
         start = 0
-        for block in dense_blocks:
+        for block in blocks:
             stop = start + block.shape[0]
             covariance[start:stop, start:stop] = block
             start = stop
-        return self._read_only_array(covariance)
+        covariance.setflags(write=False)
+        return self._read_only_view(covariance)
 
     @staticmethod
     def _expand_bounds(bounds, dimension, name):
